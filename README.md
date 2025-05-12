@@ -44,15 +44,3 @@ First run `yarn install` and then `docker-compose up`
 
 >The best way to learn is by experimenting and modifying the code. Try tweaking the code to understand how different configurations and scenarios affect the telemetry data.
 
-## Feedback and Contributions
-
-Your feedback to this repository are highly appreciated! If you encounter any issues or have ideas to improve it, please feel free to open an issue or submit a pull request. Let's make this learning resource better together!
-
-## Acknowledgments
-
-Special thanks to all the contributors who have helped create and improve these code examples. Your dedication to sharing knowledge and helping others learn is invaluable.
-
-Happy learning!
-
-*Michael Haberman*
-*habmic@gmail.com*
