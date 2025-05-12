@@ -25,14 +25,14 @@ function start(serviceName: string) {
     }); 
     const metricReader = new PeriodicExportingMetricReader({
         exporter: new OTLPMetricExporter({
-            url:'http://collector:4318/v1/metrics'
+            url:'http://tempo:4318/v1/metrics'
         })
     })
     meterProvider.addMetricReader(metricReader);
     const meter = meterProvider.getMeter('my-service-meter');
 
     const traceExporter = new OTLPTraceExporter({
-        url: 'http://collector:4318/v1/traces',
+        url: 'http://tempo:4318/v1/traces',
     });
 
     const sdk = new NodeSDK({

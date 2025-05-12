@@ -1,0 +1,73 @@
+local.file "endpoints" {
+    filename = "/etc/alloy/endpoints.json"
+}
+
+otelcol.receiver.otlp "otlp_receiver" {
+    grpc {
+        endpoint = "0.0.0.0:4317"
+    }
+    http {
+        endpoint = "0.0.0.0:4318"
+    }
+    output {
+        traces = [
+            otelcol.processor.batch.traces.input,
+        ]
+        metrics = [
+            otelcol.processor.batch.metrics.input,
+        ]
+    }
+}
+
+otelcol.processor.batch "traces" {
+    send_batch_size = 1000
+    send_batch_max_size = 2000
+    timeout = "2s"
+    output {
+        traces = [otelcol.exporter.otlp.tempo.input]
+    }
+}
+
+otelcol.processor.batch "metrics" {
+    send_batch_size = 1000
+    timeout = "10s"
+    output {
+        metrics = [otelcol.exporter.prometheus.default.input]
+    }
+}
+
+otelcol.exporter.prometheus "default" {
+  forward_to = [prometheus.remote_write.mimir.receiver]
+}
+
+
+
+otelcol.exporter.otlp "tempo" {
+    client {
+        auth = otelcol.auth.headers.tempo.handler
+        endpoint = json_path(local.file.endpoints.content, ".traces.url")[0]
+        tls {
+            insecure = json_path(local.file.endpoints.content, ".traces.tls.insecure")[0]
+            insecure_skip_verify = json_path(local.file.endpoints.content, ".traces.tls.insecureSkipVerify")[0]
+        }
+    }
+}
+
+
+otelcol.auth.headers "tempo" {
+    header {
+        key = "Authorization"
+        value = join(["Basic ", json_path(local.file.endpoints.content, ".traces.basicAuthToken")[0]], "")
+    }
+}
+
+
+prometheus.remote_write "mimir" {
+    endpoint {
+        url = json_path(local.file.endpoints.content, ".metrics.url")[0]
+        basic_auth {
+            username = json_path(local.file.endpoints.content, ".metrics.basicAuth.username")[0]
+            password = json_path(local.file.endpoints.content, ".metrics.basicAuth.password")[0]
+        }
+    }
+}

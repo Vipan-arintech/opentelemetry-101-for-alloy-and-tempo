@@ -25,32 +25,91 @@ services:
     image: redis:latest
     ports:
       - '6379:6379'
-  jaeger:
-    image: jaegertracing/jaeger:2.1.0
+
+
+  # jaeger:
+  #   image: jaegertracing/jaeger:2.1.0
+  #   ports:
+  #       - 16686:16686
+  #       - 14250:14250
+  #       - "4317:4317"
+  #       - "4318:4318"
+  #   environment:
+  #       COLLECTOR_OTLP_ENABLED: true
+
+
+  tempo:
+    image: grafana/tempo:2.6.0
+    container_name: tempo
     ports:
-        - 16686:16686
-        - 14250:14250
-        - "4317:4317"
-        - "4318:4318"
+      - "3200:3200"
+      - "4317:4317"
+      - "4318:4318"
+    command: ["-config.file=/etc/tempo-config.yaml"]
+    volumes:
+      - "./tempo/tempo-config.yaml:/etc/tempo-config.yaml"
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: grafana
+    volumes:
+      - "./grafana/provisioning:/etc/grafana/provisioning"
+      - "./grafana/grafana.ini:/etc/grafana/grafana.ini"
+    ports:
+      - "3000:3000"
     environment:
-        COLLECTOR_OTLP_ENABLED: true
-  prometheus:
-      image: prom/prometheus
-      command:
-        - '--config.file=/etc/prometheus/prometheus.yml'
-      volumes:
-        - ./prometheus/:/etc/prometheus/
-      ports:
-        - 9090:9090
-  collector:
-    image: otel/opentelemetry-collector-contrib
-    volumes: 
-      - ./collector/collector.yml:/etc/otel-collector-config.yaml
-    command: ["--config=/etc/otel-collector-config.yaml"]
+      - GF_FEATURE_TOGGLES_ENABLE=flameGraph traceqlSearch traceQLStreaming correlations metricsSummary traceqlEditor traceToMetrics traceToProfiles datatrails
+      - GF_INSTALL_PLUGINS=grafana-lokiexplore-app,grafana-exploretraces-app
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+
+
+  # prometheus:
+  #     image: prom/prometheus
+  #     command:
+  #       - '--config.file=/etc/prometheus/prometheus.yml'
+  #     volumes:
+  #       - ./prometheus/:/etc/prometheus/
+  #     ports:
+  #       - 9090:9090
+
+  mimir:
+    image: grafana/mimir:2.13.0
+    container_name: mimir
     ports:
-      - "8889:8889"
+      - "9009:9009"
+    volumes:
+      - ./mimir/mimir-config.yaml:/etc/mimir/mimir-config.yaml
+    command:
+      [
+        "-ingester.native-histograms-ingestion-enabled=true",
+        "-config.file=/etc/mimir/mimir-config.yaml",
+      ]
+
+
+  # collector:
+  #   image: otel/opentelemetry-collector-contrib
+  #   volumes: 
+  #     - ./collector/collector.yml:/etc/otel-collector-config.yaml
+  #   command: ["--config=/etc/otel-collector-config.yaml"]
+  #   ports:
+  #     - "8889:8889"
       
-    depends_on:
-      - jaeger
-      - prometheus
+  #   depends_on:
+  #     - jaeger
+  #     - prometheus
   
+  alloy:
+    image: grafana/alloy:v1.3.1
+    container_name: alloy
+    ports:
+      - "12345:12345"
+    volumes:
+      - "./alloy/config.alloy:/etc/alloy/config.alloy"
+      - "./alloy/endpoints.json:/etc/alloy/endpoints.json"
+    command: [
+      "run",
+      "--server.http.listen-addr=0.0.0.0:12345",
+      "--stability.level=public-preview",
+      "/etc/alloy/config.alloy",
+    ]
