@@ -44,9 +44,11 @@ echo "deb https://dl.yarnpkg.com/debian/ stable main" | sudo tee /etc/apt/source
 sudo apt update && sudo apt install yarn
 ```
 
-3. **Running it with docker:** 
-First run `yarn install` and then `docker-compose up`
+3. **Running it with docker-compose:** 
+```
+yarn install
 
+docker-compose up -d
 
->The best way to learn is by experimenting and modifying the code. Try tweaking the code to understand how different configurations and scenarios affect the telemetry data.
+```
 
