@@ -28,7 +28,17 @@ datasources:
         filterByTraceID: false
         spanEndTimeShift: "500ms"
         spanStartTimeShift: "-500ms"
-        tags: ["votingdb"]
+      tracesToMetrics:
+        datasourceUid: 'Mimir' 
+        spanStartTimeShift: '-1h'
+        spanEndTimeShift: '1h'
+        tags:
+          - key: 'service.name'
+            value: 'service'
+          - key: 'job'
+        queries:
+          - name: 'Sample query'
+            query: 'sum(rate(traces_spanmetrics_latency_bucket{$$__tags}[5m]))'
 
   - name: Mimir
     type: prometheus

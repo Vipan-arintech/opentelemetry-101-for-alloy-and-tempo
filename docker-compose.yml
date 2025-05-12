@@ -107,9 +107,22 @@ services:
     volumes:
       - "./alloy/config.alloy:/etc/alloy/config.alloy"
       - "./alloy/endpoints.json:/etc/alloy/endpoints.json"
+      - "/var/run/docker.sock:/var/run/docker.sock"
     command: [
       "run",
       "--server.http.listen-addr=0.0.0.0:12345",
-      "--stability.level=public-preview",
+      "--stability.level=experimental",
       "/etc/alloy/config.alloy",
     ]
+
+
+  loki:
+    image: grafana/loki:3.2.0
+    container_name: loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki/loki-config.yaml:/etc/loki/local-config.yaml
+    command: ["--pattern-ingester.enabled=true", "-config.file=/etc/loki/local-config.yaml "]
+    environment:
+      - LOKI_VALIDATION_ALLOW_STRUCTURED_METADATA=true

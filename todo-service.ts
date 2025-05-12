@@ -11,6 +11,7 @@ const redis = new Redis({ host: 'redis' });
 
 const calls = meter.createHistogram('http-calls');
 
+
 app.use((req, res, next) => {
     const startTime = Date.now();
     req.on('end', () => {
