@@ -32,10 +32,16 @@ To navigate between the different phases of the course I have used git tags. Bel
 git clone https://github.com/habmic/opentelemetry-101.git
 ```
 
-2. **Checkout the first tag:** 
+2. **Install correct Yarn** 
 
 ```
-git checkout 1
+# Remove any existing npm-based yarn installation
+npm uninstall -g yarn
+
+# Install Yarn through official method
+curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | sudo apt-key add -
+echo "deb https://dl.yarnpkg.com/debian/ stable main" | sudo tee /etc/apt/sources.list.d/yarn.list
+sudo apt update && sudo apt install yarn
 ```
 
 3. **Running it with docker:** 
