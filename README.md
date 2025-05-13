@@ -29,7 +29,7 @@ To navigate between the different phases of the course I have used git tags. Bel
 1. **Clone the Repository:** 
 
 ```
-git clone https://github.com/habmic/opentelemetry-101.git
+git clone https://github.com/Vipan-arintech/opentelemetry-101-for-alloy-and-tempo.git
 ```
 
 2. **Install correct Yarn** 
