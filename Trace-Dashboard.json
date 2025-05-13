@@ -185,8 +185,8 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 10,
-        "w": 24,
+        "h": 11,
+        "w": 13,
         "x": 0,
         "y": 12
       },
@@ -242,10 +242,10 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 10,
-        "w": 24,
-        "x": 0,
-        "y": 22
+        "h": 11,
+        "w": 11,
+        "x": 13,
+        "y": 12
       },
       "id": 1,
       "options": {
@@ -290,13 +290,13 @@
     "list": []
   },
   "time": {
-    "from": "2025-05-13T04:25:32.039Z",
-    "to": "2025-05-13T05:25:32.039Z"
+    "from": "now-1h",
+    "to": "now"
   },
   "timepicker": {},
   "timezone": "browser",
   "title": "Traces",
   "uid": "felqd1xigmltsa",
-  "version": 4,
+  "version": 5,
   "weekStart": ""
 }
