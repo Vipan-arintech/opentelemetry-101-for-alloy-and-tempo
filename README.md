@@ -51,4 +51,7 @@ yarn install
 docker-compose up -d
 
 ```
+4. **Creating Trace Dashboard**
+use the Trace-Dashboard.json file to create this dashboard
 
+![image](https://github.com/user-attachments/assets/515bd91f-728f-4e4f-95dd-e575f4437bf9)
