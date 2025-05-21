@@ -3,13 +3,27 @@ const meter = start('todo-service');
 import express from 'express';
 import axios from 'axios';
 import opentelemetry from "@opentelemetry/api";
+import cors from 'cors';
 const app = express();
+
+app.use(express.json());
+
+// 2. Enable CORS for all origins (fine for local/dev):
+app.use(cors());
+
+// app.use(cors({
+//   origin: 'http://localhost:8082', 
+//   methods: ['GET', 'POST', 'PUT', 'DELETE'],
+//   allowedHeaders: ['Content-Type']
+// }));
+
 
 import Redis from "ioredis";
 import { api } from '@opentelemetry/sdk-node';
 const redis = new Redis({ host: 'redis' });
 
 const calls = meter.createHistogram('http-calls');
+
 
 
 app.use((req, res, next) => {

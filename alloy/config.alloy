@@ -147,3 +147,28 @@ otelcol.connector.servicegraph "tracemetrics" {
         metrics = [otelcol.exporter.prometheus.tracemetrics.input]
     }
 }
+
+
+
+
+
+faro.receiver "todo" {
+    server {
+        listen_address           = "0.0.0.0"
+        listen_port              = 12345
+        cors_allowed_origins     = ["*"]
+
+        max_allowed_payload_size = "10MiB"
+
+        rate_limiting {
+            rate = 100
+        }
+    }
+
+    sourcemaps { }
+
+    output {
+        logs   = [loki.write.autologging.receiver]
+        traces = [otelcol.exporter.otlp.tempo.input]
+    }
+}

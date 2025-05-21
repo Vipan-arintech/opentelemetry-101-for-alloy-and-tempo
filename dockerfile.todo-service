@@ -4,8 +4,13 @@ WORKDIR /usr/src/app
 
 COPY package.json ./
 
+RUN npm install cors
+             
+RUN npm install --save-dev @types/cors
+
 RUN yarn
 
 EXPOSE 8080
 
 CMD ["yarn","todo"]
+

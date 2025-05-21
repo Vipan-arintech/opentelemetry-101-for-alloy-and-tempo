@@ -126,3 +126,10 @@ services:
     command: ["--pattern-ingester.enabled=true", "-config.file=/etc/loki/local-config.yaml "]
     environment:
       - LOKI_VALIDATION_ALLOW_STRUCTURED_METADATA=true
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "8082:80"
+    # depends_on:
+    #   - todo-service
