@@ -17,6 +17,9 @@ otelcol.receiver.otlp "otlp_receiver" {
         metrics = [
             otelcol.processor.batch.metrics.input,
         ]
+        logs = [
+            otelcol.exporter.loki.autologging.input,
+        ]
     }
 }
 
@@ -72,6 +75,11 @@ prometheus.remote_write "mimir" {
     }
 }
 
+otelcol.exporter.loki "autologging" {
+    forward_to = [loki.process.autologging.receiver]
+}
+
+
 otelcol.connector.spanlogs "autologging" {
     spans = true
     roots = true
@@ -83,9 +91,6 @@ otelcol.connector.spanlogs "autologging" {
     output {
         logs = [otelcol.exporter.loki.autologging.input]
     }
-}
-otelcol.exporter.loki "autologging" {
-    forward_to = [loki.process.autologging.receiver]
 }
 
 

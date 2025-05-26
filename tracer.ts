@@ -5,19 +5,35 @@ import { PrometheusExporter } from '@opentelemetry/exporter-prometheus';
 import { MeterProvider, PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
 import { Resource } from '@opentelemetry/resources';
 import { SemanticResourceAttributes } from '@opentelemetry/semantic-conventions';
-import { ParentBasedSampler, TraceIdRatioBasedSampler } from '@opentelemetry/sdk-trace-base'
+import { ParentBasedSampler } from '@opentelemetry/sdk-trace-base'
 import { OurSampler } from './ourSampler';
-import {W3CBaggagePropagator, W3CTraceContextPropagator, CompositePropagator} from '@opentelemetry/core'
-import { OTLPMetricExporter} from '@opentelemetry/exporter-metrics-otlp-proto'
+import { W3CBaggagePropagator, W3CTraceContextPropagator, CompositePropagator } from '@opentelemetry/core'
+import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-proto'
+import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-proto';
+import { LoggerProvider, SimpleLogRecordProcessor } from '@opentelemetry/sdk-logs';
 
 function start(serviceName: string) {
+    // Create and configure the LoggerProvider
+    const loggerProvider = new LoggerProvider({
+        resource: new Resource({
+            [SemanticResourceAttributes.SERVICE_NAME]: serviceName,
+            'team.owner': 'core-team',
+            'deployment': '4'
+        }),
+    });
+
+    // Create and configure the OTLP log exporter
+    const logExporter = new OTLPLogExporter({
+        url: 'http://alloy:4318/v1/logs',
+        headers: {
+            'Content-Type': 'application/x-protobuf'
+        }
+    });
+
+    // Add the log processor to the provider
+    loggerProvider.addLogRecordProcessor(new SimpleLogRecordProcessor(logExporter));
 
     const { endpoint, port } = PrometheusExporter.DEFAULT_OPTIONS;
-    // const exporter = new PrometheusExporter({}, () => {
-    //     console.log(
-    //         `prometheus scrape endpoint: http://localhost:${port}${endpoint}`,
-    //     );
-    // });
     const meterProvider = new MeterProvider({
         resource: new Resource({
             [SemanticResourceAttributes.SERVICE_NAME]: serviceName,
@@ -25,14 +41,14 @@ function start(serviceName: string) {
     }); 
     const metricReader = new PeriodicExportingMetricReader({
         exporter: new OTLPMetricExporter({
-            url:'http://tempo:4318/v1/metrics'
+            url: 'http://alloy:4318/v1/metrics'
         })
     })
     meterProvider.addMetricReader(metricReader);
     const meter = meterProvider.getMeter('my-service-meter');
 
     const traceExporter = new OTLPTraceExporter({
-        url: 'http://tempo:4318/v1/traces',
+        url: 'http://alloy:4318/v1/traces',
     });
 
     const sdk = new NodeSDK({
@@ -64,12 +80,14 @@ function start(serviceName: string) {
         textMapPropagator: new CompositePropagator({
             propagators:[new W3CTraceContextPropagator(), new W3CBaggagePropagator()]
         })
-
     });
 
     sdk.start();
 
-    return meter;
+    return {
+        meter,
+        logger: loggerProvider.getLogger('todo-service-logger')
+    };
 }
 
-export default start
+export default start;
