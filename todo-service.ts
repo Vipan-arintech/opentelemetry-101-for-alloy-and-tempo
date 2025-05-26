@@ -8,15 +8,14 @@ const app = express();
 
 app.use(express.json());
 
-// 2. Enable CORS for all origins (fine for local/dev):
-app.use(cors());
-
-// app.use(cors({
-//   origin: 'http://localhost:8082', 
-//   methods: ['GET', 'POST', 'PUT', 'DELETE'],
-//   allowedHeaders: ['Content-Type']
-// }));
-
+// app.use(cors());
+// Configure CORS for frontend with credentials
+app.use(cors({
+  origin: 'http://localhost:8082',  // Frontend origin
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'traceparent', 'tracestate']
+}));
 
 import Redis from "ioredis";
 import { api } from '@opentelemetry/sdk-node';

@@ -104,6 +104,7 @@ services:
     container_name: alloy
     ports:
       - "12345:12345"
+      - "12346:12346"
     volumes:
       - "./alloy/config.alloy:/etc/alloy/config.alloy"
       - "./alloy/endpoints.json:/etc/alloy/endpoints.json"

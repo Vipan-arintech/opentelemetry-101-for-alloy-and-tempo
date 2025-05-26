@@ -155,7 +155,7 @@ otelcol.connector.servicegraph "tracemetrics" {
 faro.receiver "todo" {
     server {
         listen_address           = "0.0.0.0"
-        listen_port              = 12345
+        listen_port              = 12346
         cors_allowed_origins     = ["*"]
 
         max_allowed_payload_size = "10MiB"
@@ -168,7 +168,38 @@ faro.receiver "todo" {
     sourcemaps { }
 
     output {
-        logs   = [loki.write.autologging.receiver]
+        logs   = [loki.process.faro.receiver]
         traces = [otelcol.exporter.otlp.tempo.input]
+    }
+}
+
+
+
+loki.process "faro" {
+    forward_to = [loki.write.faro.receiver]
+
+    stage.logfmt {
+        mapping = {
+            "app_name" = "app_name",
+        }
+    }
+
+    stage.labels {
+        values = {
+            service_name = "app_name",
+        }
+    }
+}
+
+
+
+loki.write "faro" {
+    endpoint {
+        url = json_path(local.file.endpoints.content, ".logs.url")[0]
+
+        basic_auth {
+            username = json_path(local.file.endpoints.content, ".logs.basicAuth.username")[0]
+            password = json_path(local.file.endpoints.content, ".logs.basicAuth.password")[0]
+        }
     }
 }
