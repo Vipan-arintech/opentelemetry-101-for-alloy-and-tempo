@@ -12,156 +12,341 @@ const faro = initializeFaro({
     ...getWebInstrumentations(),
     new TracingInstrumentation({
       instrumentationOptions: {
-        propagateTraceHeaderCorsUrls: [/.*/], // Allow trace header propagation for all URLs
+        propagateTraceHeaderCorsUrls: [/.*/],
       },
     }),
   ],
 });
 
-// get OTel trace and context APIs
+// Get OTel trace and context APIs
 const { trace, context } = faro.api.getOTEL();
 
-const backendUrl = 'http://localhost:8081/todos';
-// const backendUrl = 'http://todo:8080/todos';
+// API URLs
+const AUTH_URL = 'http://localhost:8083';
+const TODO_URL = 'http://localhost:8081';
 
-// Fetch todos and populate table
-async function fetchTodos() {
-  const tracer = trace.getTracer('todos-frontend');
-  const span = tracer.startSpan('fetchTodos');
+// Initialize date pickers
+flatpickr("#todoDueDate", {
+  enableTime: true,
+  dateFormat: "Y-m-d H:i",
+});
 
-  try {
-    await context.with(trace.setSpan(context.active(), span), async () => {
-      const response = await fetch(backendUrl, {
-        // Enable CORS and credentials to ensure trace headers are sent
-        mode: 'cors',
-        credentials: 'include',
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Network response was not ok (${response.status})`);
-      }
+flatpickr("#todoReminderDate", {
+  enableTime: true,
+  dateFormat: "Y-m-d H:i",
+});
 
-      // Parse the JSON payload
-      const { todos, user } = await response.json();
+// Auth state management
+let authToken = localStorage.getItem('token');
+let currentUser = JSON.parse(localStorage.getItem('user'));
 
-      // Get table body and clear existing rows
-      const tbody = document.getElementById('todosBody');
-      tbody.innerHTML = '';
+// Show/hide containers based on auth state
+function updateAuthState() {
+  const authContainer = document.getElementById('authContainer');
+  const registerContainer = document.getElementById('registerContainer');
+  const todoContainer = document.getElementById('todoContainer');
 
-      // Populate table with trace context
-      todos.forEach(({ name }) => {
-        const row = document.createElement('tr');
-        row.innerHTML = `
-          <td>${user.username}</td>
-          <td>${user.userId}</td>
-          <td>${name}</td>
-        `;
-        tbody.appendChild(row);
-
-        // Log each todo with trace context
-        faro.api.pushLog(['Todo loaded:', name], {
-          level: 'info',
-          context: {
-            todoName: name,
-            userId: user.userId
-          }
-        });
-      });
-
-      // Track successful load with Faro and trace context
-      faro.api.pushEvent('todos_loaded', {
-        count: todos.length.toString(),
-        traceId: span.spanContext().traceId,
-        spanId: span.spanContext().spanId
-      });
-      
-      span.end();
-    });
-  } catch (error) {
-    console.error('Error fetching todos:', error);
-    
-    // Add trace context to error
-    const spanContext = span.spanContext();
-    span.recordException(error);
-    span.setStatus({ code: 'ERROR', message: error.message });
-    span.end();
-    
-    faro.api.pushError(error, {
-      context: {
-        traceId: spanContext.traceId,
-        spanId: spanContext.spanId
-      }
-    });
+  if (authToken) {
+    authContainer.classList.add('hidden');
+    registerContainer.classList.add('hidden');
+    todoContainer.classList.remove('hidden');
+    fetchTodos();
+  } else {
+    authContainer.classList.remove('hidden');
+    registerContainer.classList.add('hidden');
+    todoContainer.classList.add('hidden');
   }
 }
 
-// Initialize when page loads
-document.addEventListener('DOMContentLoaded', fetchTodos);
+// Auth form handlers
+document.getElementById('loginForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const tracer = trace.getTracer('auth');
+  const span = tracer.startSpan('login');
 
+  try {
+    const username = document.getElementById('username').value;
+    const password = document.getElementById('password').value;
 
+    const response = await fetch(`${AUTH_URL}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
 
+    const data = await response.json();
+    if (response.ok) {
+      authToken = data.token;
+      currentUser = data.user;
+      localStorage.setItem('token', authToken);
+      localStorage.setItem('user', JSON.stringify(currentUser));
+      updateAuthState();
+      span.setAttribute('login.status', 'success');
+    } else {
+      alert(data.error);
+      span.setAttribute('login.status', 'failed');
+    }
+  } catch (error) {
+    console.error('Login error:', error);
+    alert('Error logging in');
+    span.recordException(error);
+  }
+  span.end();
+});
 
+document.getElementById('registerForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const tracer = trace.getTracer('auth');
+  const span = tracer.startSpan('register');
 
+  try {
+    const username = document.getElementById('regUsername').value;
+    const email = document.getElementById('regEmail').value;
+    const password = document.getElementById('regPassword').value;
 
+    const response = await fetch(`${AUTH_URL}/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, email, password })
+    });
 
+    const data = await response.json();
+    if (response.ok) {
+      authToken = data.token;
+      currentUser = data.user;
+      localStorage.setItem('token', authToken);
+      localStorage.setItem('user', JSON.stringify(currentUser));
+      updateAuthState();
+      span.setAttribute('register.status', 'success');
+    } else {
+      alert(data.error);
+      span.setAttribute('register.status', 'failed');
+    }
+  } catch (error) {
+    console.error('Registration error:', error);
+    alert('Error registering');
+    span.recordException(error);
+  }
+  span.end();
+});
 
+// Todo form handler
+document.getElementById('todoForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const tracer = trace.getTracer('todos');
+  const span = tracer.startSpan('create_todo');
 
+  try {
+    const name = document.getElementById('todoName').value.trim();
+    const description = document.getElementById('todoDescription').value.trim();
+    const dueDate = document.getElementById('todoDueDate').value;
+    const reminderDate = document.getElementById('todoReminderDate').value;
+    const priority = document.getElementById('todoPriority').value;
 
+    // Validate required fields
+    if (!name) {
+      alert('Todo name is required');
+      span.setAttribute('todo.create.status', 'validation_error');
+      span.end();
+      return;
+    }
 
+    // Prepare the request body
+    const todoData = {
+      name,
+      description: description || undefined,
+      priority
+    };
 
+    // Only add dates if they are set
+    if (dueDate) {
+      const dueDateObj = new Date(dueDate);
+      if (isNaN(dueDateObj.getTime())) {
+        alert('Invalid due date format');
+        span.setAttribute('todo.create.status', 'validation_error');
+        span.end();
+        return;
+      }
+      todoData.dueDate = dueDateObj.toISOString();
+    }
 
+    if (reminderDate) {
+      const reminderDateObj = new Date(reminderDate);
+      if (isNaN(reminderDateObj.getTime())) {
+        alert('Invalid reminder date format');
+        span.setAttribute('todo.create.status', 'validation_error');
+        span.end();
+        return;
+      }
+      todoData.reminderDate = reminderDateObj.toISOString();
+    }
 
+    console.log('Sending todo data:', todoData);
 
+    const response = await fetch(`${TODO_URL}/todos`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${authToken}`
+      },
+      body: JSON.stringify(todoData)
+    });
 
+    const data = await response.json();
 
+    if (response.ok) {
+      document.getElementById('todoForm').reset();
+      fetchTodos();
+      span.setAttribute('todo.create.status', 'success');
+    } else {
+      // Show detailed error message
+      if (data.details && Array.isArray(data.details)) {
+        alert(data.details.join('\n'));
+      } else {
+        alert(data.error || 'Error creating todo');
+      }
+      span.setAttribute('todo.create.status', 'failed');
+      span.setAttribute('error.message', data.error);
+    }
+  } catch (error) {
+    console.error('Error creating todo:', error);
+    alert('Error creating todo. Please try again.');
+    span.recordException(error);
+  }
+  span.end();
+});
 
+// Fetch and display todos
+async function fetchTodos() {
+  const tracer = trace.getTracer('todos');
+  const span = tracer.startSpan('fetch_todos');
 
+  try {
+    const response = await fetch(`${TODO_URL}/todos`, {
+      headers: {
+        'Authorization': `Bearer ${authToken}`
+      }
+    });
 
+    if (response.ok) {
+      const data = await response.json();
+      const tbody = document.getElementById('todosBody');
+      tbody.innerHTML = '';
 
+      data.todos.forEach(todo => {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td>${todo.name}</td>
+          <td>${todo.description || ''}</td>
+          <td>${todo.dueDate ? new Date(todo.dueDate).toLocaleString() : ''}</td>
+          <td class="priority-${todo.priority}">${todo.priority}</td>
+          <td>
+            <input type="checkbox" ${todo.completed ? 'checked' : ''} 
+              onchange="updateTodoStatus('${todo._id}', this.checked)">
+          </td>
+          <td>
+            <button onclick="deleteTodo('${todo._id}')" class="btn btn-danger">Delete</button>
+          </td>
+        `;
+        tbody.appendChild(row);
+      });
+      span.setAttribute('todo.count', data.todos.length);
+    } else {
+      const data = await response.json();
+      if (response.status === 401) {
+        // Token expired or invalid
+        logout();
+      } else {
+        alert(data.error);
+      }
+    }
+  } catch (error) {
+    console.error('Error fetching todos:', error);
+    span.recordException(error);
+  }
+  span.end();
+}
 
+// Update todo status
+window.updateTodoStatus = async (todoId, completed) => {
+  const tracer = trace.getTracer('todos');
+  const span = tracer.startSpan('update_todo');
 
+  try {
+    const response = await fetch(`${TODO_URL}/todos/${todoId}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${authToken}`
+      },
+      body: JSON.stringify({ completed })
+    });
 
+    if (!response.ok) {
+      const data = await response.json();
+      alert(data.error);
+      fetchTodos(); // Refresh to show correct state
+    }
+  } catch (error) {
+    console.error('Error updating todo:', error);
+    alert('Error updating todo');
+    span.recordException(error);
+  }
+  span.end();
+};
 
+// Delete todo
+window.deleteTodo = async (todoId) => {
+  const tracer = trace.getTracer('todos');
+  const span = tracer.startSpan('delete_todo');
 
+  if (confirm('Are you sure you want to delete this todo?')) {
+    try {
+      const response = await fetch(`${TODO_URL}/todos/${todoId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${authToken}`
+        }
+      });
 
+      if (response.ok) {
+        fetchTodos();
+      } else {
+        const data = await response.json();
+        alert(data.error);
+      }
+    } catch (error) {
+      console.error('Error deleting todo:', error);
+      alert('Error deleting todo');
+      span.recordException(error);
+    }
+  }
+  span.end();
+};
 
+// Auth navigation
+document.getElementById('showRegister').addEventListener('click', (e) => {
+  e.preventDefault();
+  document.getElementById('authContainer').classList.add('hidden');
+  document.getElementById('registerContainer').classList.remove('hidden');
+});
 
+document.getElementById('showLogin').addEventListener('click', (e) => {
+  e.preventDefault();
+  document.getElementById('registerContainer').classList.add('hidden');
+  document.getElementById('authContainer').classList.remove('hidden');
+});
 
+// Logout
+function logout() {
+  localStorage.removeItem('token');
+  localStorage.removeItem('user');
+  authToken = null;
+  currentUser = null;
+  updateAuthState();
+}
 
+document.getElementById('logoutBtn').addEventListener('click', logout);
 
-
-
-
-
-
-
-// const backendUrl = 'http://todo:8080/todos';
-// // Fetch todos and populate table
-// async function fetchTodos() {
-//     try {
-//         const response = await fetch(backendUrl);
-//         if (!response.ok) throw new Error('Network response was not ok');
-        
-//         const data = await response.json();
-//         const tbody = document.getElementById('todosBody');
-        
-//         data.todos.forEach(todo => {
-//             const row = document.createElement('tr');
-//             row.innerHTML = `
-//                 <td>${data.user.username}</td>
-//                 <td>${data.user.userId}</td>
-//                 <td>${todo.name}</td>
-//             `;
-//             tbody.appendChild(row);
-//         });
-
-//         // Track successful load
-//         faro.api.pushEvent('todos_loaded', { count: data.todos.length.toString() });
-//     } catch (error) {
-//         console.error('Error fetching todos:', error);
-//         faro.api.pushError(error);
-//     }
-// }
-
-// // Initialize when page loads
-// document.addEventListener('DOMContentLoaded', fetchTodos);
+// Initialize app
+updateAuthState();

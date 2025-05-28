@@ -1,11 +1,26 @@
-FROM node:16.13.2
+FROM node:16-slim
 
 WORKDIR /usr/src/app
 
-COPY package.json ./
+# Copy package files
+COPY package*.json ./
 
-RUN yarn
+# Install build dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    python3 \
+    make \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
 
+# Install node dependencies
+RUN yarn install --frozen-lockfile --network-timeout 100000
+
+# Copy the rest of the application
+COPY . .
+
+# Expose port
 EXPOSE 8080
 
-CMD ["yarn","auth"]
+# Start the service
+CMD ["yarn", "auth"]
