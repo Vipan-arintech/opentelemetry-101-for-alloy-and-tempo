@@ -95,7 +95,25 @@ otelcol.connector.spanlogs "autologging" {
 
 
 loki.process "autologging" {
-    forward_to = [loki.write.autologging.receiver]
+  stage.json {
+    expressions = {
+      traceId = "",
+      body    = "",
+    }
+  }
+
+  stage.logfmt {
+    mapping = {
+      traceID = "traceID",
+      level   = "level",
+    }
+  }
+
+  stage.output {
+    source = "body"
+  }
+
+  forward_to = [loki.write.autologging.receiver]
 }
 
 loki.write "autologging" {
