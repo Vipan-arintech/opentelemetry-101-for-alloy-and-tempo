@@ -32,21 +32,9 @@ To navigate between the different phases of the course I have used git tags. Bel
 git clone https://github.com/Vipan-arintech/opentelemetry-101-for-alloy-and-tempo.git
 ```
 
-2. **Install correct Yarn** 
-
+2. **Install dependencies and run with docker-compose:** 
 ```
-# Remove any existing npm-based yarn installation
-npm uninstall -g yarn
-
-# Install Yarn through official method
-curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | sudo apt-key add -
-echo "deb https://dl.yarnpkg.com/debian/ stable main" | sudo tee /etc/apt/sources.list.d/yarn.list
-sudo apt update && sudo apt install yarn
-```
-
-3. **Running it with docker-compose:** 
-```
-yarn install
+npm install
 
 docker-compose up -d
 

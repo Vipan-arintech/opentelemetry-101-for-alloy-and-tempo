@@ -13,8 +13,8 @@ RUN apt-get update && \
     g++ \
     && rm -rf /var/lib/apt/lists/*
 
-# Install node dependencies
-RUN yarn install --frozen-lockfile --network-timeout 100000
+# Install all dependencies including devDependencies
+RUN npm install
 
 # Copy the rest of the application
 COPY . .
@@ -23,5 +23,5 @@ COPY . .
 EXPOSE 8080
 
 # Start the service
-CMD ["yarn", "todo"]
+CMD ["npm", "run", "todo"]
 

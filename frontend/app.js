@@ -40,6 +40,15 @@ flatpickr("#todoReminderDate", {
 let authToken = localStorage.getItem('token');
 let currentUser = JSON.parse(localStorage.getItem('user'));
 
+// Make logout function globally available
+window.logout = function() {
+  localStorage.removeItem('token');
+  localStorage.removeItem('user');
+  authToken = null;
+  currentUser = null;
+  updateAuthState();
+};
+
 // Show/hide containers based on auth state
 function updateAuthState() {
   const authContainer = document.getElementById('authContainer');
@@ -336,17 +345,6 @@ document.getElementById('showLogin').addEventListener('click', (e) => {
   document.getElementById('registerContainer').classList.add('hidden');
   document.getElementById('authContainer').classList.remove('hidden');
 });
-
-// Logout
-function logout() {
-  localStorage.removeItem('token');
-  localStorage.removeItem('user');
-  authToken = null;
-  currentUser = null;
-  updateAuthState();
-}
-
-document.getElementById('logoutBtn').addEventListener('click', logout);
 
 // Initialize app
 updateAuthState();

@@ -132,11 +132,12 @@ mongoose.connection.on('query', (query) => {
 // Monitor connection pool events
 mongoose.connection.on('connected', () => {
   const span = tracer.startSpan('mongodb.connect');
+  const conn = mongoose.connection as any;
   logger.emit({
     severityText: 'INFO',
     body: 'Connected to MongoDB successfully',
     attributes: {
-      'db.pool.size': mongoose.connection.client?.topology?.connections?.length || 0
+      'db.pool.size': conn?.client?.topology?.connections?.length || 0
     }
   });
   span.end();
@@ -144,11 +145,12 @@ mongoose.connection.on('connected', () => {
 
 mongoose.connection.on('disconnected', () => {
   const span = tracer.startSpan('mongodb.disconnect');
+  const conn = mongoose.connection as any;
   logger.emit({
     severityText: 'WARN',
     body: 'MongoDB disconnected',
     attributes: {
-      'db.last_error': mongoose.connection.lastError || null
+      'db.last_error': conn?.lastError || null
     }
   });
   span.end();
@@ -156,9 +158,10 @@ mongoose.connection.on('disconnected', () => {
 
 // Monitor connection pool metrics
 setInterval(() => {
-  if (mongoose.connection.client?.topology) {
-    const poolSize = mongoose.connection.client.topology.connections?.length || 0;
-    const activeConnections = mongoose.connection.client.topology.connections?.filter(
+  const conn = mongoose.connection as any;
+  if (conn?.client?.topology) {
+    const poolSize = conn.client.topology.connections?.length || 0;
+    const activeConnections = conn.client.topology.connections?.filter(
       (conn: any) => conn.active
     ).length || 0;
     
@@ -195,7 +198,8 @@ export async function connectDB() {
     });
 
     // Add initial connection metrics
-    const poolSize = mongoose.connection.client?.topology?.connections?.length || 0;
+    const conn = mongoose.connection as any;
+    const poolSize = conn?.client?.topology?.connections?.length || 0;
     mongoConnectionPoolSize.add(poolSize);
     
     logger.emit({
