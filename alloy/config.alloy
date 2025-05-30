@@ -17,6 +17,9 @@ otelcol.receiver.otlp "otlp_receiver" {
         metrics = [
             otelcol.processor.batch.metrics.input,
         ]
+        logs = [
+            otelcol.exporter.loki.autologging.input,
+        ]
     }
 }
 
@@ -72,6 +75,11 @@ prometheus.remote_write "mimir" {
     }
 }
 
+otelcol.exporter.loki "autologging" {
+    forward_to = [loki.process.autologging.receiver]
+}
+
+
 otelcol.connector.spanlogs "autologging" {
     spans = true
     roots = true
@@ -84,13 +92,28 @@ otelcol.connector.spanlogs "autologging" {
         logs = [otelcol.exporter.loki.autologging.input]
     }
 }
-otelcol.exporter.loki "autologging" {
-    forward_to = [loki.process.autologging.receiver]
-}
 
 
 loki.process "autologging" {
-    forward_to = [loki.write.autologging.receiver]
+  stage.json {
+    expressions = {
+      traceId = "",
+      body    = "",
+    }
+  }
+
+  stage.logfmt {
+    mapping = {
+      traceID = "traceID",
+      level   = "level",
+    }
+  }
+
+  stage.output {
+    source = "body"
+  }
+
+  forward_to = [loki.write.autologging.receiver]
 }
 
 loki.write "autologging" {
@@ -145,5 +168,61 @@ otelcol.connector.servicegraph "tracemetrics" {
     ]
     output {
         metrics = [otelcol.exporter.prometheus.tracemetrics.input]
+    }
+}
+
+
+
+
+
+faro.receiver "todo" {
+    server {
+        listen_address           = "0.0.0.0"
+        listen_port              = 12346
+        cors_allowed_origins     = ["*"]
+
+        max_allowed_payload_size = "10MiB"
+
+        rate_limiting {
+            rate = 100
+        }
+    }
+
+    sourcemaps { }
+
+    output {
+        logs   = [loki.process.faro.receiver]
+        traces = [otelcol.exporter.otlp.tempo.input]
+    }
+}
+
+
+
+loki.process "faro" {
+    forward_to = [loki.write.faro.receiver]
+
+    stage.logfmt {
+        mapping = {
+            "app_name" = "app_name",
+        }
+    }
+
+    stage.labels {
+        values = {
+            service_name = "app_name",
+        }
+    }
+}
+
+
+
+loki.write "faro" {
+    endpoint {
+        url = json_path(local.file.endpoints.content, ".logs.url")[0]
+
+        basic_auth {
+            username = json_path(local.file.endpoints.content, ".logs.basicAuth.username")[0]
+            password = json_path(local.file.endpoints.content, ".logs.basicAuth.password")[0]
+        }
     }
 }
