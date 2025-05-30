@@ -1,7 +1,6 @@
 import start from './tracer';
-const { meter, logger } = start('todo-service');
-import express from 'express';
-import axios from 'axios';
+const { logger } = start('todo-service');
+import express, { Request, Response, NextFunction } from 'express';
 import opentelemetry from "@opentelemetry/api";
 import cors from 'cors';
 import { connectDB } from './config/database';
@@ -10,6 +9,22 @@ import { auth } from './middleware/auth';
 import schedule from 'node-schedule';
 import Redis from 'ioredis';
 import mongoose from 'mongoose';
+import { context, propagation } from '@opentelemetry/api';
+
+// Extend Express Request type
+declare module 'express-serve-static-core' {
+  interface Request {
+    baggageUser?: {
+      id: string;
+      name: string;
+    };
+    user: {
+      _id: string;
+      id: string;
+      username: string;
+    };
+  }
+}
 
 const app = express();
 const tracer = opentelemetry.trace.getTracer('todo-service');
@@ -52,6 +67,20 @@ app.use(cors({
 
 // Other middleware
 app.use(express.json());
+
+// Middleware to extract user from baggage
+app.use((_req: Request, _res: Response, next: NextFunction) => {
+  const activeContext = context.active();
+  const baggage = propagation.getBaggage(activeContext);
+  if (baggage) {
+    const userId = baggage.getEntry('user.id')?.value;
+    const userName = baggage.getEntry('user.name')?.value;
+    if (userId && userName) {
+      _req.baggageUser = { id: userId, name: userName };
+    }
+  }
+  next();
+});
 
 // Connect to MongoDB
 connectDB().catch((error: Error) => {
@@ -98,44 +127,55 @@ function scheduleReminder(todoId: string, reminderDate: Date, userId: string) {
 }
 
 // Get all todos for authenticated user
-app.get('/todos', auth, async (req, res) => {
+app.get('/todos', auth, async (req: Request, res: Response) => {
   const span = tracer.startSpan('todo.list');
   
   try {
-    const todos = await Todo.find({ userId: req.user._id });
+    const userId = req.user.id;
+    const baggage = propagation.getBaggage(context.active());
+    const userName = baggage?.getEntry('user.name')?.value;
+    const userRole = baggage?.getEntry('user.role')?.value;
+
+    span.setAttributes({
+      'user.id': userId,
+      'user.name': userName || 'unknown',
+      'user.role': userRole || 'unknown'
+    });
+
+    const todos = await Todo.find({ userId }).sort({ createdAt: -1 });
     
     span.setAttribute('todo.count', todos.length);
-    span.setAttribute('userId', req.user._id.toString());
     span.end();
 
-    res.json({ todos, user: { username: req.user.username, userId: req.user._id } });
+    return res.json({ 
+      todos, 
+      user: { 
+        username: userName || req.user.username, 
+        userId 
+      } 
+    });
   } catch (error) {
     span.recordException(error as Error);
     span.end();
-    res.status(500).json({ error: 'Error fetching todos' });
+    return res.status(500).json({ error: 'Error fetching todos' });
   }
 });
 
 // Create new todo
-app.post('/todos', auth, async (req, res) => {
+app.post('/todos', auth, async (req: Request, res: Response) => {
   const span = tracer.startSpan('todo.create');
   
   try {
-    console.log('Request headers:', req.headers);
-    console.log('Request body:', req.body);
-    console.log('User from auth middleware:', req.user);
-
     const { name, dueDate, reminderDate, priority, description } = req.body;
+    const baggage = propagation.getBaggage(context.active());
+    const userName = baggage?.getEntry('user.name')?.value;
     
-    // Validate required fields
     if (!name) {
-      console.log('Validation failed: missing name');
       span.setAttribute('todo.create.error', 'missing_name');
       span.end();
       return res.status(400).json({ error: 'Todo name is required' });
     }
 
-    // Create todo object with validation
     const todoData = {
       userId: req.user._id,
       name,
@@ -145,70 +185,28 @@ app.post('/todos', auth, async (req, res) => {
       ...(reminderDate && { reminderDate: new Date(reminderDate) })
     };
 
-    console.log('Creating todo with data:', todoData);
-
-    // Create and validate the todo instance
     const todo = new Todo(todoData);
-
-    // Validate the todo object
-    const validationError = todo.validateSync();
-    if (validationError) {
-      console.log('Mongoose validation error:', validationError);
-      const errorMessages = Object.values(validationError.errors).map(err => err.message);
-      console.log('Validation error messages:', errorMessages);
-      
-      span.setAttribute('todo.create.error', 'validation_error');
-      span.recordException(validationError);
-      span.end();
-      
-      return res.status(400).json({ 
-        error: 'Validation error', 
-        details: errorMessages
-      });
-    }
-
-    // Save the todo
     await todo.save();
-    console.log('Todo saved successfully:', todo);
 
-    // Schedule reminder if reminderDate is set
     if (reminderDate) {
       scheduleReminder(todo._id.toString(), new Date(reminderDate), req.user._id.toString());
     }
 
-    span.setAttribute('todo.id', todo._id.toString());
-    span.setAttribute('userId', req.user._id.toString());
+    span.setAttributes({
+      'todo.id': todo._id.toString(),
+      'user.id': req.user._id.toString(),
+      'user.name': userName || 'unknown',
+      'todo.name': name,
+      'todo.priority': priority || 'medium'
+    });
     span.end();
 
-    res.status(201).json(todo);
+    return res.status(201).json(todo);
   } catch (error: any) {
-    console.error('Error creating todo:', error);
-    console.error('Error stack:', error.stack);
-    
     span.setAttribute('todo.create.error', error.name || 'unknown');
     span.recordException(error);
     span.end();
-    
-    // Handle different types of errors
-    if (error.name === 'ValidationError') {
-      const errorMessages = Object.values(error.errors).map((err: any) => err.message);
-      console.log('Validation error messages:', errorMessages);
-      return res.status(400).json({ 
-        error: 'Validation error', 
-        details: errorMessages
-      });
-    }
-    
-    logger.emit({
-      severityText: 'ERROR',
-      body: `Error creating todo: ${error.message}`,
-      attributes: {
-        error: error.message,
-        stack: error.stack
-      }
-    });
-    
-    res.status(500).json({ error: 'Error creating todo', details: error.message });
+    return res.status(500).json({ error: 'Error creating todo' });
   }
 });
 
@@ -246,11 +244,11 @@ app.put('/todos/:id', auth, async (req, res) => {
     span.setAttribute('userId', req.user._id.toString());
     span.end();
 
-    res.json(todo);
+    return res.json(todo);
   } catch (error) {
     span.recordException(error as Error);
     span.end();
-    res.status(500).json({ error: 'Error updating todo' });
+    return res.status(500).json({ error: 'Error updating todo' });
   }
 });
 
@@ -277,11 +275,11 @@ app.delete('/todos/:id', auth, async (req, res) => {
     span.setAttribute('userId', req.user._id.toString());
     span.end();
 
-    res.json({ message: 'Todo deleted successfully' });
+    return res.json({ message: 'Todo deleted successfully' });
   } catch (error) {
     span.recordException(error as Error);
     span.end();
-    res.status(500).json({ error: 'Error deleting todo' });
+    return res.status(500).json({ error: 'Error deleting todo' });
   }
 });
 
@@ -294,7 +292,7 @@ interface HealthStatus {
 }
 
 // Health check endpoint
-app.get('/health', async (req, res) => {
+app.get('/health', async (_req, res) => {
   const span = tracer.startSpan('health.check');
   
   try {
@@ -318,7 +316,7 @@ app.get('/health', async (req, res) => {
     });
 
     const statusCode = healthStatus.status === 'healthy' ? 200 : 503;
-    res.status(statusCode).json(healthStatus);
+    return res.status(statusCode).json(healthStatus);
   } catch (error: any) {
     const healthStatus: HealthStatus = {
       status: 'unhealthy',
@@ -329,14 +327,14 @@ app.get('/health', async (req, res) => {
     };
 
     span.recordException(error);
-    res.status(503).json(healthStatus);
+    return res.status(503).json(healthStatus);
   } finally {
     span.end();
   }
 });
 
 // Error handling middleware must be last
-app.use((err: any, req: any, res: any, next: any) => {
+app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   console.error('Global error handler:', err);
   
   // Create an error span
@@ -344,28 +342,22 @@ app.use((err: any, req: any, res: any, next: any) => {
   span.setAttributes({
     'error.type': err.name || 'UnknownError',
     'error.message': err.message || 'Unknown error occurred',
-    'http.method': req.method,
-    'http.url': req.url,
-    'http.route': req.route?.path,
     'error.stack': err.stack || 'No stack trace available'
   });
   span.recordException(err);
   
-  // Log with trace context (automatically included by our enhanced logger)
+  // Log with trace context
   logger.emit({
     severityText: 'ERROR',
     body: `Unhandled error: ${err.message}`,
     attributes: {
       error: err.message,
-      stack: err.stack,
-      method: req.method,
-      url: req.url,
-      route: req.route?.path
+      stack: err.stack
     }
   });
   
   span.end();
-  res.status(500).json({ error: 'Internal server error' });
+  return res.status(500).json({ error: 'Internal server error' });
 });
 
 const PORT = process.env.PORT || 8080;  // Match docker-compose environment variable

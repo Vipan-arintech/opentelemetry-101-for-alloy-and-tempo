@@ -47,7 +47,12 @@ export const auth = async (req: Request, res: Response, next: NextFunction) => {
       return res.status(401).json({ error: 'User not found' });
     }
 
-    req.user = user;
+    req.user = {
+      _id: user._id.toString(),
+      id: user._id.toString(),
+      username: user.username
+    };
+
     span.setAttribute('auth.status', 'success');
     span.setAttribute('userId', user._id.toString());
     span.end();
