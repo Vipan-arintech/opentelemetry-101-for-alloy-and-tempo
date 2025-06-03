@@ -49,6 +49,14 @@ app.use((req, res, next) => {
   const span = tracer.startSpan('http.request');
   const startTime = Date.now();
   
+  // Add auth-specific attributes to differentiate from frontend traces
+  span.setAttributes({
+    'auth.service.version': '1.0.0',
+    'auth.request.type': 'authentication',
+    'auth.endpoint.category': req.path.split('/')[2] || 'root',
+    'auth.request.timestamp': new Date().toISOString()
+  });
+  
   // Log request with trace context
   logger.emit({
     severityText: 'INFO',

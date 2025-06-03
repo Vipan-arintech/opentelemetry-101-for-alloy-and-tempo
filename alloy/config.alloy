@@ -192,7 +192,7 @@ faro.receiver "todo" {
 
     output {
         logs   = [loki.process.faro.receiver]
-        traces = [otelcol.exporter.otlp.tempo.input]
+        traces = [otelcol.processor.batch.traces.input]
     }
 }
 
