@@ -1,7 +1,8 @@
 import start from './tracer';
 const { logger, meter } = start('todo-service');
 import express, { Request, Response, NextFunction } from 'express';
-import opentelemetry, { SpanStatusCode } from "@opentelemetry/api";
+import opentelemetry, { SpanStatusCode, context, propagation, trace, ROOT_CONTEXT } from "@opentelemetry/api";
+import type { Baggage, BaggageEntry } from '@opentelemetry/api';
 import cors from 'cors';
 import { connectDB } from './config/database';
 import { Todo } from './models/Todo';
@@ -9,7 +10,6 @@ import { auth } from './middleware/auth';
 import schedule from 'node-schedule';
 import Redis from 'ioredis';
 import mongoose from 'mongoose';
-import { context, propagation } from '@opentelemetry/api';
 
 // Business metrics
 const todoOperations = meter.createHistogram('todo.operations', {
@@ -57,7 +57,7 @@ declare module 'express-serve-static-core' {
       id: string;
       name: string;
     };
-    user: {
+    user?: {
       _id: string;
       id: string;
       username: string;
@@ -165,136 +165,359 @@ function scheduleReminder(todoId: string, reminderDate: Date, userId: string) {
   reminderJobs.set(todoId, job);
 }
 
-// Add request timing middleware
+// Enhanced context middleware
 app.use((req: Request, res: Response, next: NextFunction) => {
-  const startTime = Date.now();
-  const span = tracer.startSpan('http.request');
-  
-  span.setAttributes({
-    'http.method': req.method,
-    'http.url': req.url,
-    'http.host': req.headers.host || '',
-    'http.user_agent': req.headers['user-agent'] || ''
+  const currentContext = context.active();
+  const baggage = propagation.createBaggage({
+    'service.name': { value: 'todo-service' },
+    'service.version': { value: process.env.npm_package_version || '1.0.0' },
+    'deployment.environment': { value: process.env.NODE_ENV || 'development' }
   });
 
+  // Extract trace context from headers
+  const extractedContext = propagation.extract(currentContext, req.headers);
+  const span = tracer.startSpan('http.request', undefined, extractedContext);
+  
+  // Add request-specific context
+  const requestBaggage = propagation.createBaggage({
+    'http.method': { value: req.method },
+    'http.url': { value: req.url },
+    'http.host': { value: req.headers.host || '' },
+    'request.id': { value: req.headers['x-request-id']?.toString() || generateRequestId() },
+    'user.agent': { value: req.headers['user-agent'] || '' }
+  });
+
+  // Merge baggages
+  const mergedBaggage = mergeBaggages(baggage, requestBaggage);
+  
+  // Set the context with baggage
+  const spanContext = trace.setSpan(
+    propagation.setBaggage(currentContext, mergedBaggage),
+    span
+  );
+
+  // Store span and context in request for later use
+  (req as any).span = span;
+  (req as any).traceContext = spanContext;
+
   // Add trace context to response headers
-  const currentContext = context.active();
   const traceHeaders: Record<string, string> = {};
-  propagation.inject(currentContext, traceHeaders);
+  propagation.inject(spanContext, traceHeaders);
   Object.entries(traceHeaders).forEach(([key, value]) => {
     res.setHeader(key, value);
   });
 
-  res.on('finish', () => {
-    const duration = Date.now() - startTime;
-    
-    apiLatency.record(duration, {
-      route: req.route?.path || req.path,
-      method: req.method,
-      status_code: res.statusCode.toString()
-    });
-
-    span.setAttributes({
-      'http.status_code': res.statusCode,
-      'http.response_time_ms': duration
-    });
-    
-    if (res.statusCode >= 400) {
-      errorRate.add(1, {
-        route: req.route?.path || req.path,
-        status_code: res.statusCode.toString()
+  // Execute the request in the context
+  context.with(spanContext, () => {
+    res.on('finish', () => {
+      const duration = Date.now() - (req as any).startTime;
+      
+      span.setAttributes({
+        'http.status_code': res.statusCode,
+        'http.response_time_ms': duration,
+        'http.route': req.route?.path || req.path,
+        'http.request_id': (req as any).requestId
       });
-    }
-    
-    span.end();
-  });
 
-  next();
+      if (res.statusCode >= 400) {
+        span.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: `HTTP ${res.statusCode} returned`
+        });
+      } else {
+        span.setStatus({ code: SpanStatusCode.OK });
+      }
+
+      span.end();
+    });
+
+    next();
+  });
 });
 
-// Get all todos for authenticated user
-app.get('/todos', auth, async (req: Request, res: Response) => {
-  const span = tracer.startSpan('todo.list');
-  const startTime = Date.now();
-  
-  try {
-    const userId = req.user.id;
-    const baggage = propagation.getBaggage(context.active());
-    const userName = baggage?.getEntry('user.name')?.value;
-    const userRole = baggage?.getEntry('user.role')?.value;
+// Enhance auth middleware to propagate user context
+const enhancedAuth = (req: Request, res: Response, next: NextFunction) => {
+  auth(req, res, async (err?: any) => {
+    if (err) return next(err);
 
-    // Try cache first
-    const cacheKey = `todos:${userId}`;
-    const cachedTodos = await redis.get(cacheKey);
+    const currentContext = context.active();
+    const currentSpan = trace.getSpan(currentContext);
     
-    let todos;
-    if (cachedTodos) {
-      todos = JSON.parse(cachedTodos);
-      cacheHitRatio.add(1, { operation: 'get_todos' });
-      span.setAttribute('cache.hit', true);
-    } else {
-      todos = await Todo.find({ userId }).sort({ createdAt: -1 });
-      await redis.setex(cacheKey, 300, JSON.stringify(todos)); // Cache for 5 minutes
-      cacheHitRatio.add(0, { operation: 'get_todos' });
-      span.setAttribute('cache.hit', false);
+    if (req.user && currentSpan) {
+      // Add user context to baggage
+      const userBaggage = propagation.createBaggage({
+        'user.id': { value: req.user.id },
+        'user.name': { value: req.user.username },
+        'user.role': { value: (req.user as any).role || 'user' }
+      });
+
+      // Merge with existing baggage
+      const existingBaggage = propagation.getBaggage(currentContext);
+      const mergedBaggage = mergeBaggages(existingBaggage, userBaggage);
+
+      // Set the enhanced context
+      const enhancedContext = propagation.setBaggage(currentContext, mergedBaggage);
+      
+      // Add user attributes to current span
+      currentSpan.setAttributes({
+        'user.id': req.user.id,
+        'user.name': req.user.username,
+        'enduser.id': req.user.id,
+        'enduser.role': (req.user as any).role || 'user'
+      });
+
+      // Continue with enhanced context
+      return context.with(enhancedContext, () => next());
     }
 
-    // Record business metrics
-    const completedTodos = todos.filter((todo: any) => todo.completed);
-    const priorityCount = todos.reduce((acc: any, todo: any) => {
-      acc[todo.priority] = (acc[todo.priority] || 0) + 1;
-      return acc;
-    }, {});
+    next();
+  });
+};
 
-    Object.entries(priorityCount).forEach(([priority, count]) => {
-      todoPriorities.add(count as number, { priority });
+// Helper function to merge baggages
+function mergeBaggages(baggage1?: Baggage, baggage2?: Baggage): Baggage {
+  const merged = propagation.createBaggage();
+  
+  if (baggage1) {
+    baggage1.getAllEntries().forEach(([key, entry]: [string, BaggageEntry]) => {
+      merged.setEntry(key, entry);
     });
+  }
+  
+  if (baggage2) {
+    baggage2.getAllEntries().forEach(([key, entry]: [string, BaggageEntry]) => {
+      merged.setEntry(key, entry);
+    });
+  }
+  
+  return merged;
+}
 
-    userActivityGauge.add(1, { 
-      user_id: userId,
-      operation: 'list_todos'
-    });
+// Helper function to generate request ID
+function generateRequestId(): string {
+  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+}
+
+// Add HTTP semantic conventions
+const HTTP_METHOD_GET = 'GET';
+const HTTP_ROUTE_TODOS = '/todos';
+
+// Get all todos for authenticated user
+app.get(HTTP_ROUTE_TODOS, enhancedAuth, async (req: Request, res: Response) => {
+  const requestStartTime = Date.now();
+  const parentContext = context.active();
+  
+  // Create the main request span
+  const requestSpan = tracer.startSpan('http.request', {
+    attributes: {
+      'http.method': HTTP_METHOD_GET,
+      'http.route': HTTP_ROUTE_TODOS,
+      'http.target': req.url,
+      'http.host': req.headers.host || '',
+      'http.scheme': req.protocol,
+      'http.user_agent': req.headers['user-agent'] || '',
+      'http.request_id': req.headers['x-request-id'] || generateRequestId(),
+      'http.client_ip': req.ip,
+      'http.flavor': req.httpVersion,
+      'net.transport': 'IP.TCP',
+    }
+  }, parentContext);
+
+  // Create operation span as child of request span
+  const operationContext = trace.setSpan(parentContext, requestSpan);
+  const operationSpan = tracer.startSpan('todo.list', {
+    attributes: {
+      'operation.name': 'list_todos',
+      'operation.type': 'read',
+      'service.name': 'todo-service'
+    }
+  }, operationContext);
+
+  try {
+    const userId = req.user!.id;
+    const baggage = propagation.getBaggage(parentContext);
     
-    span.setAttributes({
-      'user.id': userId,
-      'user.name': userName || 'unknown',
-      'user.role': userRole || 'unknown',
-      'todo.count': todos.length,
-      'todo.completed_count': completedTodos.length,
-      'todo.completion_rate': todos.length ? completedTodos.length / todos.length : 0
+    // Create detailed operation context
+    const operationBaggage = propagation.createBaggage({
+      'operation.name': { value: 'list_todos' },
+      'operation.timestamp': { value: new Date().toISOString() },
+      'operation.id': { value: generateRequestId() },
+      'service.version': { value: process.env.npm_package_version || '1.0.0' },
+      'service.environment': { value: process.env.NODE_ENV || 'development' }
     });
 
-    todoOperations.record(Date.now() - startTime, {
-      operation: 'list',
-      user_id: userId
-    });
+    const enhancedContext = propagation.setBaggage(
+      trace.setSpan(operationContext, operationSpan),
+      mergeBaggages(baggage, operationBaggage)
+    );
 
-    span.end();
-    return res.json({ 
-      todos, 
-      user: { 
-        username: userName || req.user.username, 
-        userId 
-      } 
+    // Execute operation with enhanced context
+    return await context.with(enhancedContext, async () => {
+      const cacheKey = `todos:${userId}`;
+      
+      // Create cache operation span
+      const cacheSpan = tracer.startSpan('cache.get_todos', {
+        attributes: {
+          'cache.operation': 'get',
+          'cache.key': cacheKey
+        }
+      }, enhancedContext);
+
+      let todos;
+      let cacheHit = false;
+      try {
+        const cachedTodos = await redis.get(cacheKey);
+        if (cachedTodos) {
+          todos = JSON.parse(cachedTodos);
+          cacheHit = true;
+          cacheHitRatio.add(1, { operation: 'get_todos' });
+          cacheSpan.setAttribute('cache.hit', true);
+        }
+      } catch (error) {
+        cacheSpan.recordException(error as Error);
+        cacheSpan.setStatus({ code: SpanStatusCode.ERROR });
+      } finally {
+        cacheSpan.end();
+      }
+
+      if (!cacheHit) {
+        // Create database operation span
+        const dbSpan = tracer.startSpan('db.fetch_todos', {
+          attributes: {
+            'db.operation': 'find',
+            'db.system': 'mongodb',
+            'db.name': 'todo-app',
+            'db.collection': 'todos',
+            'db.query': JSON.stringify({ userId })
+          }
+        }, enhancedContext);
+
+        try {
+          todos = await Todo.find({ userId }).sort({ createdAt: -1 });
+          await redis.setex(cacheKey, 300, JSON.stringify(todos));
+          cacheHitRatio.add(0, { operation: 'get_todos' });
+          
+          dbSpan.setAttributes({
+            'db.result.count': todos.length,
+            'db.operation.success': true,
+            'db.execution_time': Date.now() - requestStartTime
+          });
+          dbSpan.setStatus({ code: SpanStatusCode.OK });
+        } catch (error) {
+          dbSpan.recordException(error as Error);
+          dbSpan.setStatus({ code: SpanStatusCode.ERROR });
+          throw error;
+        } finally {
+          dbSpan.end();
+        }
+      }
+
+      // Record business metrics with context
+      const completedTodos = todos.filter((todo: any) => todo.completed);
+      const priorityCount = todos.reduce((acc: any, todo: any) => {
+        acc[todo.priority] = (acc[todo.priority] || 0) + 1;
+        return acc;
+      }, {});
+
+      // Business metrics span
+      const metricsSpan = tracer.startSpan('metrics.record', {
+        attributes: {
+          'metrics.type': 'business',
+          'metrics.operation': 'todo_analysis'
+        }
+      }, enhancedContext);
+
+      const completionRate = todos.length ? completedTodos.length / todos.length : 0;
+
+      try {
+        Object.entries(priorityCount).forEach(([priority, count]) => {
+          todoPriorities.add(count as number, { priority });
+        });
+        
+        todoOperations.record(Date.now() - requestStartTime, {
+          operation: 'list',
+          user_id: userId,
+          cache_hit: cacheHit
+        });
+
+        operationSpan.setAttributes({
+          'todo.count': todos.length,
+          'todo.completed_count': completedTodos.length,
+          'todo.completion_rate': completionRate,
+          'todo.priority_distribution': JSON.stringify(priorityCount),
+          'operation.cache_hit': cacheHit,
+          'operation.duration_ms': Date.now() - requestStartTime
+        });
+
+        metricsSpan.setAttributes({
+          'metrics.todo.total': todos.length,
+          'metrics.todo.completed': completedTodos.length,
+          'metrics.todo.completion_rate': completionRate
+        });
+      } finally {
+        metricsSpan.end();
+      }
+
+      // Set final request span attributes
+      requestSpan.setAttributes({
+        'http.response_content_length': JSON.stringify(todos).length,
+        'http.response_time_ms': Date.now() - requestStartTime,
+        'operation.success': true
+      });
+      requestSpan.setStatus({ code: SpanStatusCode.OK });
+
+      // End operation span
+      operationSpan.end();
+      // End request span
+      requestSpan.end();
+
+      return res.json({ 
+        todos, 
+        user: { 
+          username: req.user!.username, 
+          userId 
+        },
+        metadata: {
+          cached: cacheHit,
+          completionRate: completionRate,
+          totalCount: todos.length,
+          completedCount: completedTodos.length
+        }
+      });
     });
   } catch (error) {
     const err = error as Error;
+    
+    // Record error metrics
     errorRate.add(1, {
       operation: 'list_todos',
       error_type: err.name,
       error_message: err.message
     });
     
-    span.recordException(err);
-    span.setStatus({ code: SpanStatusCode.ERROR });
-    span.end();
+    // Record error in spans
+    operationSpan.recordException(err);
+    operationSpan.setStatus({ code: SpanStatusCode.ERROR });
+    operationSpan.end();
+
+    requestSpan.recordException(err);
+    requestSpan.setAttributes({
+      'error.type': err.name,
+      'error.message': err.message,
+      'http.response_time_ms': Date.now() - requestStartTime
+    });
+    requestSpan.setStatus({ code: SpanStatusCode.ERROR });
+    requestSpan.end();
     
-    return res.status(500).json({ error: 'Error fetching todos' });
+    return res.status(500).json({ 
+      error: 'Error fetching todos',
+      details: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
   }
 });
 
 // Create new todo
-app.post('/todos', auth, async (req: Request, res: Response) => {
+app.post('/todos', enhancedAuth, async (req: Request, res: Response) => {
   const span = tracer.startSpan('todo.create');
   const startTime = Date.now();
   
@@ -318,7 +541,7 @@ app.post('/todos', auth, async (req: Request, res: Response) => {
     }
 
     const todoData = {
-      userId: req.user._id,
+      userId: req.user!._id,
       name,
       description,
       priority: priority || 'medium',
@@ -330,7 +553,7 @@ app.post('/todos', auth, async (req: Request, res: Response) => {
     await todo.save();
 
     // Invalidate cache
-    await redis.del(`todos:${req.user._id}`);
+    await redis.del(`todos:${req.user!._id}`);
 
     if (reminderDate) {
       const reminderSpan = tracer.startSpan('schedule.reminder', {
@@ -340,20 +563,19 @@ app.post('/todos', auth, async (req: Request, res: Response) => {
         }
       });
       
-      scheduleReminder(todo._id.toString(), new Date(reminderDate), req.user._id.toString());
+      scheduleReminder(todo._id.toString(), new Date(reminderDate), req.user!._id.toString());
       
       reminderMetrics.record(new Date(reminderDate).getTime() - Date.now(), {
         todo_id: todo._id.toString(),
-        user_id: req.user._id.toString()
+        user_id: req.user!._id.toString()
       });
       
       reminderSpan.end();
     }
 
-    // Record business metrics
     todoPriorities.add(1, { priority: todo.priority });
     userActivityGauge.add(1, {
-      user_id: req.user._id.toString(),
+      user_id: req.user!._id.toString(),
       operation: 'create_todo'
     });
 
@@ -365,7 +587,7 @@ app.post('/todos', auth, async (req: Request, res: Response) => {
 
     span.setAttributes({
       'todo.id': todo._id.toString(),
-      'user.id': req.user._id.toString(),
+      'user.id': req.user!._id.toString(),
       'user.name': userName || 'unknown',
       'todo.name': name,
       'todo.priority': priority || 'medium',
@@ -392,13 +614,13 @@ app.post('/todos', auth, async (req: Request, res: Response) => {
 });
 
 // Update todo
-app.put('/todos/:id', auth, async (req, res) => {
+app.put('/todos/:id', enhancedAuth, async (req, res) => {
   const span = tracer.startSpan('todo.update');
   
   try {
     const { name, completed, dueDate, reminderDate, priority, description } = req.body;
     
-    const todo = await Todo.findOne({ _id: req.params.id, userId: req.user._id });
+    const todo = await Todo.findOne({ _id: req.params.id, userId: req.user!._id });
     
     if (!todo) {
       span.setAttribute('todo.status', 'not_found');
@@ -406,7 +628,6 @@ app.put('/todos/:id', auth, async (req, res) => {
       return res.status(404).json({ error: 'Todo not found' });
     }
 
-    // Update fields
     todo.name = name || todo.name;
     todo.completed = completed !== undefined ? completed : todo.completed;
     todo.dueDate = dueDate || todo.dueDate;
@@ -416,13 +637,12 @@ app.put('/todos/:id', auth, async (req, res) => {
 
     await todo.save();
 
-    // Update reminder if reminderDate changed
     if (reminderDate) {
-      scheduleReminder(todo._id.toString(), new Date(reminderDate), req.user._id.toString());
+      scheduleReminder(todo._id.toString(), new Date(reminderDate), req.user!._id.toString());
     }
 
     span.setAttribute('todo.id', todo._id.toString());
-    span.setAttribute('userId', req.user._id.toString());
+    span.setAttribute('userId', req.user!._id.toString());
     span.end();
 
     return res.json(todo);
@@ -434,11 +654,11 @@ app.put('/todos/:id', auth, async (req, res) => {
 });
 
 // Delete todo
-app.delete('/todos/:id', auth, async (req, res) => {
+app.delete('/todos/:id', enhancedAuth, async (req, res) => {
   const span = tracer.startSpan('todo.delete');
   
   try {
-    const todo = await Todo.findOneAndDelete({ _id: req.params.id, userId: req.user._id });
+    const todo = await Todo.findOneAndDelete({ _id: req.params.id, userId: req.user!._id });
     
     if (!todo) {
       span.setAttribute('todo.status', 'not_found');
@@ -446,14 +666,13 @@ app.delete('/todos/:id', auth, async (req, res) => {
       return res.status(404).json({ error: 'Todo not found' });
     }
 
-    // Cancel any scheduled reminder
     if (reminderJobs.has(req.params.id)) {
       reminderJobs.get(req.params.id).cancel();
       reminderJobs.delete(req.params.id);
     }
 
     span.setAttribute('todo.id', req.params.id);
-    span.setAttribute('userId', req.user._id.toString());
+    span.setAttribute('userId', req.user!._id.toString());
     span.end();
 
     return res.json({ message: 'Todo deleted successfully' });
