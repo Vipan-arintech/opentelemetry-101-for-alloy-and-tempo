@@ -1,7 +1,7 @@
 import start from './tracer';
-const { logger } = start('todo-service');
+const { logger, meter } = start('todo-service');
 import express, { Request, Response, NextFunction } from 'express';
-import opentelemetry from "@opentelemetry/api";
+import opentelemetry, { SpanStatusCode } from "@opentelemetry/api";
 import cors from 'cors';
 import { connectDB } from './config/database';
 import { Todo } from './models/Todo';
@@ -10,6 +10,45 @@ import schedule from 'node-schedule';
 import Redis from 'ioredis';
 import mongoose from 'mongoose';
 import { context, propagation } from '@opentelemetry/api';
+
+// Business metrics
+const todoOperations = meter.createHistogram('todo.operations', {
+  description: 'Todo operations with duration',
+  unit: 'ms',
+});
+
+const todoPriorities = meter.createUpDownCounter('todo.priorities', {
+  description: 'Number of todos by priority level'
+});
+
+const todoCompletionRate = meter.createHistogram('todo.completion_rate', {
+  description: 'Time taken to complete todos',
+  unit: 'ms'
+});
+
+const userActivityGauge = meter.createUpDownCounter('user.activity', {
+  description: 'User activity metrics'
+});
+
+const reminderMetrics = meter.createHistogram('todo.reminders', {
+  description: 'Reminder scheduling and execution metrics',
+  unit: 'ms'
+});
+
+// Performance metrics
+const apiLatency = meter.createHistogram('api.latency', {
+  description: 'API endpoint latency',
+  unit: 'ms'
+});
+
+const cacheHitRatio = meter.createUpDownCounter('cache.hit_ratio', {
+  description: 'Redis cache hit ratio'
+});
+
+// Error metrics
+const errorRate = meter.createCounter('error.rate', {
+  description: 'Error occurrence rate by type'
+});
 
 // Extend Express Request type
 declare module 'express-serve-static-core' {
@@ -126,9 +165,57 @@ function scheduleReminder(todoId: string, reminderDate: Date, userId: string) {
   reminderJobs.set(todoId, job);
 }
 
+// Add request timing middleware
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const startTime = Date.now();
+  const span = tracer.startSpan('http.request');
+  
+  span.setAttributes({
+    'http.method': req.method,
+    'http.url': req.url,
+    'http.host': req.headers.host || '',
+    'http.user_agent': req.headers['user-agent'] || ''
+  });
+
+  // Add trace context to response headers
+  const currentContext = context.active();
+  const traceHeaders: Record<string, string> = {};
+  propagation.inject(currentContext, traceHeaders);
+  Object.entries(traceHeaders).forEach(([key, value]) => {
+    res.setHeader(key, value);
+  });
+
+  res.on('finish', () => {
+    const duration = Date.now() - startTime;
+    
+    apiLatency.record(duration, {
+      route: req.route?.path || req.path,
+      method: req.method,
+      status_code: res.statusCode.toString()
+    });
+
+    span.setAttributes({
+      'http.status_code': res.statusCode,
+      'http.response_time_ms': duration
+    });
+    
+    if (res.statusCode >= 400) {
+      errorRate.add(1, {
+        route: req.route?.path || req.path,
+        status_code: res.statusCode.toString()
+      });
+    }
+    
+    span.end();
+  });
+
+  next();
+});
+
 // Get all todos for authenticated user
 app.get('/todos', auth, async (req: Request, res: Response) => {
   const span = tracer.startSpan('todo.list');
+  const startTime = Date.now();
   
   try {
     const userId = req.user.id;
@@ -136,17 +223,53 @@ app.get('/todos', auth, async (req: Request, res: Response) => {
     const userName = baggage?.getEntry('user.name')?.value;
     const userRole = baggage?.getEntry('user.role')?.value;
 
+    // Try cache first
+    const cacheKey = `todos:${userId}`;
+    const cachedTodos = await redis.get(cacheKey);
+    
+    let todos;
+    if (cachedTodos) {
+      todos = JSON.parse(cachedTodos);
+      cacheHitRatio.add(1, { operation: 'get_todos' });
+      span.setAttribute('cache.hit', true);
+    } else {
+      todos = await Todo.find({ userId }).sort({ createdAt: -1 });
+      await redis.setex(cacheKey, 300, JSON.stringify(todos)); // Cache for 5 minutes
+      cacheHitRatio.add(0, { operation: 'get_todos' });
+      span.setAttribute('cache.hit', false);
+    }
+
+    // Record business metrics
+    const completedTodos = todos.filter((todo: any) => todo.completed);
+    const priorityCount = todos.reduce((acc: any, todo: any) => {
+      acc[todo.priority] = (acc[todo.priority] || 0) + 1;
+      return acc;
+    }, {});
+
+    Object.entries(priorityCount).forEach(([priority, count]) => {
+      todoPriorities.add(count as number, { priority });
+    });
+
+    userActivityGauge.add(1, { 
+      user_id: userId,
+      operation: 'list_todos'
+    });
+    
     span.setAttributes({
       'user.id': userId,
       'user.name': userName || 'unknown',
-      'user.role': userRole || 'unknown'
+      'user.role': userRole || 'unknown',
+      'todo.count': todos.length,
+      'todo.completed_count': completedTodos.length,
+      'todo.completion_rate': todos.length ? completedTodos.length / todos.length : 0
     });
 
-    const todos = await Todo.find({ userId }).sort({ createdAt: -1 });
-    
-    span.setAttribute('todo.count', todos.length);
-    span.end();
+    todoOperations.record(Date.now() - startTime, {
+      operation: 'list',
+      user_id: userId
+    });
 
+    span.end();
     return res.json({ 
       todos, 
       user: { 
@@ -155,8 +278,17 @@ app.get('/todos', auth, async (req: Request, res: Response) => {
       } 
     });
   } catch (error) {
-    span.recordException(error as Error);
+    const err = error as Error;
+    errorRate.add(1, {
+      operation: 'list_todos',
+      error_type: err.name,
+      error_message: err.message
+    });
+    
+    span.recordException(err);
+    span.setStatus({ code: SpanStatusCode.ERROR });
     span.end();
+    
     return res.status(500).json({ error: 'Error fetching todos' });
   }
 });
@@ -164,6 +296,7 @@ app.get('/todos', auth, async (req: Request, res: Response) => {
 // Create new todo
 app.post('/todos', auth, async (req: Request, res: Response) => {
   const span = tracer.startSpan('todo.create');
+  const startTime = Date.now();
   
   try {
     const { name, dueDate, reminderDate, priority, description } = req.body;
@@ -171,8 +304,16 @@ app.post('/todos', auth, async (req: Request, res: Response) => {
     const userName = baggage?.getEntry('user.name')?.value;
     
     if (!name) {
-      span.setAttribute('todo.create.error', 'missing_name');
+      errorRate.add(1, {
+        operation: 'create_todo',
+        error_type: 'validation',
+        error_message: 'missing_name'
+      });
+      
+      span.setAttribute('error', 'missing_name');
+      span.setStatus({ code: SpanStatusCode.ERROR });
       span.end();
+      
       return res.status(400).json({ error: 'Todo name is required' });
     }
 
@@ -188,24 +329,64 @@ app.post('/todos', auth, async (req: Request, res: Response) => {
     const todo = new Todo(todoData);
     await todo.save();
 
+    // Invalidate cache
+    await redis.del(`todos:${req.user._id}`);
+
     if (reminderDate) {
+      const reminderSpan = tracer.startSpan('schedule.reminder', {
+        attributes: {
+          'todo.id': todo._id.toString(),
+          'reminder.date': reminderDate
+        }
+      });
+      
       scheduleReminder(todo._id.toString(), new Date(reminderDate), req.user._id.toString());
+      
+      reminderMetrics.record(new Date(reminderDate).getTime() - Date.now(), {
+        todo_id: todo._id.toString(),
+        user_id: req.user._id.toString()
+      });
+      
+      reminderSpan.end();
     }
+
+    // Record business metrics
+    todoPriorities.add(1, { priority: todo.priority });
+    userActivityGauge.add(1, {
+      user_id: req.user._id.toString(),
+      operation: 'create_todo'
+    });
+
+    todoOperations.record(Date.now() - startTime, {
+      operation: 'create',
+      priority: todo.priority,
+      has_reminder: !!reminderDate
+    });
 
     span.setAttributes({
       'todo.id': todo._id.toString(),
       'user.id': req.user._id.toString(),
       'user.name': userName || 'unknown',
       'todo.name': name,
-      'todo.priority': priority || 'medium'
+      'todo.priority': priority || 'medium',
+      'todo.has_reminder': !!reminderDate,
+      'operation.duration_ms': Date.now() - startTime
     });
-    span.end();
 
-    return res.status(201).json(todo);
-  } catch (error: any) {
-    span.setAttribute('todo.create.error', error.name || 'unknown');
-    span.recordException(error);
     span.end();
+    return res.status(201).json(todo);
+  } catch (error) {
+    const err = error as Error;
+    errorRate.add(1, {
+      operation: 'create_todo',
+      error_type: err.name,
+      error_message: err.message
+    });
+    
+    span.recordException(err);
+    span.setStatus({ code: SpanStatusCode.ERROR });
+    span.end();
+    
     return res.status(500).json({ error: 'Error creating todo' });
   }
 });
