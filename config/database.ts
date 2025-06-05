@@ -335,7 +335,7 @@ export async function connectDB() {
   try {
     mongoose.set('strictQuery', false);
     
-    const mongoURI = process.env.MONGODB_URI || 'mongodb://localhost:27017/todo-app';
+    const mongoURI = process.env.MONGODB_URI || 'mongodb://mongodb:27017/todo-app';
     
     mongoConnectionAttempts.add(1);
     
@@ -345,6 +345,8 @@ export async function connectDB() {
       'db.name': 'todo-app'
     });
     
+    console.log('Attempting to connect to MongoDB at:', mongoURI);
+    
     await mongoose.connect(mongoURI, {
       serverSelectionTimeoutMS: 5000,
       socketTimeoutMS: 45000,
@@ -353,6 +355,7 @@ export async function connectDB() {
       maxIdleTimeMS: 30000,
     });
 
+    console.log('Successfully connected to MongoDB');
     span.setStatus({ code: SpanStatusCode.OK });
     span.end();
     
@@ -370,6 +373,8 @@ export async function connectDB() {
     });
   } catch (error) {
     const err = error as Error;
+    
+    console.error('Failed to connect to MongoDB:', err.message);
     
     mongoErrors.add(1, {
       operation: 'connect',
