@@ -13,6 +13,9 @@ RUN apt-get update && \
     g++ \
     && rm -rf /var/lib/apt/lists/*
 
+# Install ts-node-dev globally
+RUN npm install -g ts-node-dev
+
 # Install all dependencies including devDependencies
 RUN npm install
 
