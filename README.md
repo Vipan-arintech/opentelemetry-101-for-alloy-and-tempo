@@ -58,24 +58,6 @@ The application consists of several components:
    - User interaction tracking
    - Error monitoring
 
-## Course Progression
-
-This course is built in a way that we start with a simple application and add more OpenTelemetry functionality in each section. Below is a table with all the available tags:
-
-| Tag | Description |
-| ------------- | ------------- |
-| 1 | Before we install OpenTelemetry |
-| 2 | Basic OpenTelemetry installation |
-| 3 | Adding Metrics |
-| 4 | Correlating logs with traces |
-| 5 | Creating manual spans |
-| 6 | Adding custom attributes |
-| 7 | Debug logs |
-| 8 | Define custom resources |
-| 9 | Configure custom sampler |
-| 10 | Using context propagation to set baggage |
-| 11-v2 | Using the OpenTelemetry Collector |
-| 12-v2 | Setting up tail sampling |
 
 ## Getting Started
 
@@ -95,10 +77,6 @@ docker-compose up -d
    - Grafana: http://localhost:3000 (admin/admin)
    - Tempo: http://localhost:3200
 
-4. **Creating Trace Dashboard**
-   Use the Trace-Dashboard.json file to create the dashboard in Grafana.
-
-![Trace Dashboard](https://github.com/user-attachments/assets/515bd91f-728f-4e4f-95dd-e575f4437bf9)
 
 ## Key Features Demonstrated
 
