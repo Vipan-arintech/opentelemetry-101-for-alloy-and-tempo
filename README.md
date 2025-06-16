@@ -96,7 +96,7 @@ import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-proto';
 import { LoggerProvider, SimpleLogRecordProcessor } from '@opentelemetry/sdk-logs';
 ```
 
-## ⚙️ Key Opentelemetry Implementation 
+## Key Opentelemetry Implementation 
 
 1. **Unified Telemetry Initialization**
 ```ts
@@ -199,11 +199,91 @@ loggerProvider.addLogRecordProcessor(new SimpleLogRecordProcessor(
 
 ```
 
+## Frontend Observability with Grafana Faro
+
+Grafana Faro is an open-source frontend observability SDK that automatically instruments your web applications for:
+
+1. Traces (via OpenTelemetry)
+2. Console logs
+3. Performance metrics
+4. Errors and exceptions
+5. User interactions and navigation
+
+In this project, Grafana Faro is used to trace frontend behavior, correlate it with backend spans, and send the data to a unified Grafana stack (via Alloy).
 
 
+**Faro SDK Initialization**
+```js
+import { initializeFaro, getWebInstrumentations } from '@grafana/faro-web-sdk';
+import { TracingInstrumentation } from '@grafana/faro-web-tracing';
 
+const faro = initializeFaro({
+  url: 'http://localhost:12346/collect',
+  app: {
+    name: 'frontend',
+    version: '1.0.0',
+  },
+  instrumentations: [
+    ...getWebInstrumentations(),
+    new TracingInstrumentation({
+      instrumentationOptions: {
+        propagateTraceHeaderCorsUrls: [/.*/],
+      },
+    }),
+  ],
+});
 
+```
+- `getWebInstrumentations()` includes DOM events, performance, console logs, etc.
+  
+- `TracingInstrumentation` enables frontend OpenTelemetry tracing.
+  
+- `propagateTraceHeaderCorsUrls: [/.*/]` ensures that trace headers are injected into all outgoing requests.
 
+    
+
+**End-to-End Trace Correlation**
+
+- Each request from the frontend to the backend carries a W3C trace context (`traceparent`, `baggage` headers).
+
+- The backend reads these headers using OpenTelemetry.
+
+- The result is correlated traces in Grafana: you can click from a frontend trace to its backend child spans.
+
+```js
+const { trace } = faro.api.getOTEL();
+const tracer = trace.getTracer('todos');
+
+const span = tracer.startSpan('create_todo');
+// async operation ...
+span.end();
+
+```
+**Grafana Alloy Configuration for Faro (Frontend)**
+
+```hcl
+faro.receiver "todo" {
+    server {
+        listen_address           = "0.0.0.0"
+        listen_port              = 12346
+        cors_allowed_origins     = ["*"]
+
+        max_allowed_payload_size = "10MiB"
+
+        rate_limiting {
+            rate = 100
+        }
+    }
+
+    sourcemaps { }
+
+    output {
+        logs   = [loki.process.faro.receiver]
+        traces = [otelcol.processor.batch.traces.input]
+    }
+}
+```
+This is configured in Grafana Alloy to accept telemetry from browsers.
 
 
 ## Key Features Demonstrated
