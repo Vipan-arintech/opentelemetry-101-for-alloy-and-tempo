@@ -78,6 +78,134 @@ docker-compose up -d
    - Tempo: http://localhost:3200
 
 
+
+
+## Core Instrumentation Architecture
+
+```ts
+import { NodeSDK } from '@opentelemetry/sdk-node';
+import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
+import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto';
+import { MeterProvider, PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
+import { Resource } from '@opentelemetry/resources';
+import { SemanticResourceAttributes } from '@opentelemetry/semantic-conventions';
+import { ParentBasedSampler } from '@opentelemetry/sdk-trace-base';
+import { W3CBaggagePropagator, W3CTraceContextPropagator, CompositePropagator } from '@opentelemetry/core';
+import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-proto';
+import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-proto';
+import { LoggerProvider, SimpleLogRecordProcessor } from '@opentelemetry/sdk-logs';
+```
+
+## ⚙️ Key Opentelemetry Implementation 
+
+1. **Unified Telemetry Initialization**
+```ts
+function start(serviceName: string) {
+  const sdk = new NodeSDK({
+    traceExporter: new OTLPTraceExporter({ url: 'http://alloy:4318/v1/traces' }),
+    serviceName,
+    instrumentations: [getNodeAutoInstrumentations({
+      "@opentelemetry/instrumentation-http": {
+        headersToSpanAttributes: {
+          client: { requestHeaders: ['tracestate', 'traceparent', 'baggage'] },
+          server: { requestHeaders: ['tracestate', 'traceparent', 'baggage'] }
+        }
+      }
+    })],
+    resource: new Resource({
+      'team.owner': 'core-team',
+      'deployment': '4'
+    }),
+    sampler: new ParentBasedSampler({ root: new OurSampler() }),
+    textMapPropagator: new CompositePropagator({
+      propagators: [new W3CTraceContextPropagator(), new W3CBaggagePropagator()]
+    })
+  });
+  sdk.start();
+}
+
+```
+
+2. **Trace-Context Logging** 
+
+Automatically injects trace context into all logs:
+
+```ts
+function getLogger(serviceName: string = 'default-service') {
+  return {
+    emit: (logRecord: any) => {
+      const traceContext = getTraceContext(); // Gets current trace/span IDs
+      baseLogger.emit({
+        ...logRecord,
+        attributes: { ...logRecord.attributes, ...traceContext }
+      });
+    }
+  };
+}
+
+function getTraceContext() {
+  const span = trace.getActiveSpan();
+  return span ? {
+    'trace.id': span.spanContext().traceId,
+    'span.id': span.spanContext().spanId,
+    'trace.flags': span.spanContext().traceFlags.toString(16)
+  } : {};
+}
+
+```
+
+3. **Advanced Resource Tagging**
+```ts
+new Resource({
+  [SemanticResourceAttributes.SERVICE_NAME]: serviceName,
+  [SemanticResourceAttributes.SERVICE_VERSION]: process.env.npm_package_version,
+  [SemanticResourceAttributes.DEPLOYMENT_ENVIRONMENT]: process.env.NODE_ENV,
+  'team.owner': 'core-team',
+  'deployment.id': process.env.DEPLOYMENT_ID,
+  'application.name': 'todo-app'
+})
+
+```
+
+4. **Propagators Configuration**
+```ts
+textMapPropagator: new CompositePropagator({
+  propagators: [
+    new W3CTraceContextPropagator(),  // W3C Trace Context standard
+    new W3CBaggagePropagator()        // Baggage support
+  ]
+})
+
+```
+
+5. **Metrics Pipeline**
+```ts
+const meterProvider = new MeterProvider({
+  resource: new Resource({ [SemanticResourceAttributes.SERVICE_NAME]: serviceName })
+});
+
+meterProvider.addMetricReader(new PeriodicExportingMetricReader({
+  exporter: new OTLPMetricExporter({ url: 'http://alloy:4318/v1/metrics' })
+}));
+
+```
+
+6. **Logs Pipeline**
+```ts
+const loggerProvider = new LoggerProvider({ resource });
+loggerProvider.addLogRecordProcessor(new SimpleLogRecordProcessor(
+  new OTLPLogExporter({ url: 'http://alloy:4318/v1/logs' })
+));
+
+```
+
+
+
+
+
+
+
+
 ## Key Features Demonstrated
 
 1. **Distributed Tracing**
