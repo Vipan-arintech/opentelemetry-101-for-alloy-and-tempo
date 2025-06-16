@@ -286,32 +286,21 @@ faro.receiver "todo" {
 This is configured in Grafana Alloy to accept telemetry from browsers.
 
 
-## Key Features Demonstrated
+## Screenshots
 
-1. **Distributed Tracing**
-   - End-to-end request tracing
-   - Service dependency visualization
-   - Latency analysis
-   - Error tracking
+1. Login Page
+      
+![image](https://github.com/user-attachments/assets/422daa61-57c5-4512-aa00-0496f014783b)
 
-2. **Metrics**
-   - Business KPIs
-   - Performance metrics
-   - Resource utilization
-   - Custom metrics
+3. Register Page
+    
+![image](https://github.com/user-attachments/assets/669b43ee-cd32-4607-ba04-51a853433deb)
 
-3. **Logging**
-   - Structured logging
-   - Log-trace correlation
-   - Error tracking
-   - Debug logs
 
-4. **Advanced Features**
-   - Custom sampling
-   - Resource attributes
-   - Baggage propagation
-   - Tail sampling
-   - Service graphs
+4. Todo Page
+   
+![image](https://github.com/user-attachments/assets/0ac479e4-575c-455e-8ec1-df08fa239fa1)
+
 
 ## Contributing
 
